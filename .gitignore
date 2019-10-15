@@ -1,0 +1,20 @@
+# TeX temporary files
+
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+
+
+# Jupyter checkpoints
+
+.idea/
+.ipynb_checkpoints/
+
+
+# Python cached stuff
+
+__pycache__/
+
