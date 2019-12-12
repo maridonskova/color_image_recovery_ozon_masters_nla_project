@@ -159,7 +159,7 @@ def cm2qm(C: np.array) -> np.array:
         raise ValueError("Supplied matrix has odd shape")
     else:
         Qa = C[:C.shape[0] // 2, :C.shape[1] // 2]
-        Qb = C[:C.shape[0] // 2, C.shape[1] // 2:]
+        Qb = -C[:C.shape[0] // 2, C.shape[1] // 2:]
 
         return np.stack([
             np.real(Qa), np.imag(Qa), np.real(Qb), np.imag(Qb)
