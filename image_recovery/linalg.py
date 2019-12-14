@@ -1,6 +1,10 @@
 # ================================
 
 import numpy as np
+import scipy.linalg as splin
+
+from tqdm.notebook import tqdm
+
 
 # ================================
 # Quaternion algebra
@@ -99,7 +103,7 @@ def qdot(Q1: np.array, Q2: np.array) -> np.array:
 # ================================
 
 
-def qm2cm(Q: np.array) -> np.array:
+def qm2cm(Q: np.array, mask: np.array = None) -> np.array:
     """
     Transforms quaternion matrix represented as NumPy tensor of shape (N, M, 4)
     to complex-valued matrix of shape (2N, 2M)
@@ -127,10 +131,17 @@ def qm2cm(Q: np.array) -> np.array:
         Qa = Q[:, :, 0] + 1j * Q[:, :, 1]
         Qb = Q[:, :, 2] + 1j * Q[:, :, 3]
 
-        return np.vstack([
+        C = np.vstack([
             np.hstack([Qa, Qb]),
             np.hstack([-np.conj(Qb), np.conj(Qa)])
         ])
+
+        if mask is None:
+            C_mask = None
+        else:
+            C_mask = np.tile(mask, (2, 2))
+
+        return C, C_mask
 
 
 def cm2qm(C: np.array) -> np.array:
@@ -159,8 +170,14 @@ def cm2qm(C: np.array) -> np.array:
         raise ValueError("Supplied matrix has odd shape")
     else:
         Qa = C[:C.shape[0] // 2, :C.shape[1] // 2]
-        Qb = -C[:C.shape[0] // 2, C.shape[1] // 2:]
+        Qb = C[:C.shape[0] // 2, C.shape[1] // 2:]
 
         return np.stack([
             np.real(Qa), np.imag(Qa), np.real(Qb), np.imag(Qb)
         ], axis=2)
+
+
+# ================================
+# Matrix recovery
+# ================================
+
