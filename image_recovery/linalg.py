@@ -3,6 +3,7 @@
 import numpy as np
 import scipy.linalg as splin
 
+from tqdm.notebook import tqdm
 
 # ================================
 # Quaternion algebra
@@ -180,7 +181,7 @@ def cm2qm(C: np.array) -> np.array:
 # ================================
 
 
-def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=0, rel_tol=1e-3,
+def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=True, rel_tol=1e-3,
           rot=10.0, rank_mult=0.9, return_norms=False, random_state=None):
     """
     LRQMC method of restoring color image with some of pixels missing
@@ -248,7 +249,7 @@ def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=0, r
     ix = 0
 
     if progress:
-        print(f"Starting LRQMC. Initial rank estimation: {c_rank}.")
+        pbar = tqdm(total=max_iter, leave=False, desc="LRQMC", postfix=f"Initial rank estimation: {c_rank}.")
 
     while flag:
         U = (X.dot(np.conj(V.T))).dot(splin.pinv(V.dot(np.conj(V.T)) + reg_coef*np.eye(c_rank), return_rank=False))
@@ -256,30 +257,35 @@ def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=0, r
         X = X0.copy()
         X[~mask_c] += (U.dot(V))[~mask_c]
 
-        eigvs = np.sort(splin.eigvalsh(np.conj(U.T).dot(U)))[::-1]
-        quots = eigvs[:-1]/eigvs[1:]
-        max_ind = np.argmax(quots)
-        mu = (c_rank - 1)*eigvs[max_ind]/(eigvs.sum() - eigvs[max_ind])
+        if c_rank > 2:
+            eigvs = np.sort(splin.eigvalsh(np.conj(U.T).dot(U)))[::-1]
+            quots = eigvs[:-1]/eigvs[1:]
+            max_ind = np.argmax(quots)
+            mu = (c_rank - 1)/(quots.sum()/quots[max_ind] - 1.0)
 
-        if mu > rot:
-            c_rank = max(max_ind + 2, int(c_rank*rank_mult))
-            U = U[:, :c_rank]
-            V = V[:c_rank, :]
+            if mu > rot:
+                c_rank = max(max_ind + 1, int(c_rank*rank_mult), 2)
+                XU, XS, XVh = splin.svd(X, compute_uv=True, full_matrices=False)
+                U = XU[:, :c_rank]*XS[None, :c_rank]
+                V = XVh[:c_rank, :]
 
         norms[ix + 1] = np.linalg.norm(X - U.dot(V))
+        rel_norm_change = (norms[ix + 1] - norms[ix])/norms[ix]
 
-        if progress and (ix + 1) % progress == 0:
-            print(f"Iteration {ix + 1}. "
-                  f"Norm reduction: {abs(norms[(ix + 1)] - norms[ix])/norms[ix]*100:.3f} %. "
-                  f"Rank / overestimation: {c_rank} / {mu:.2f}")
+        if progress:
+            pbar.update()
+            pbar.set_postfix_str(f"Norm changed: {rel_norm_change*100.0:.3f} %. "
+                                 f"Rank / overestimation: {c_rank} / {mu:.2f}")
 
-        if abs(norms[(ix + 1)] - norms[ix])/norms[ix] < rel_tol:
+        if -rel_tol < rel_norm_change < 0.0:
             if progress:
+                pbar.close()
                 print(f"Iteration {ix + 1}. Required relative tolerance achieved")
 
             flag = False
-        elif ix >= max_iter:
+        elif ix >= max_iter - 1:
             if progress:
+                pbar.close()
                 print(f"Max iterations count achieved.")
 
             flag = False
