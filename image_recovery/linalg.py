@@ -247,6 +247,9 @@ def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=0, r
     flag = True
     ix = 0
 
+    if progress:
+        print(f"Starting LRQMC. Initial rank estimation: {c_rank}.")
+
     while flag:
         U = (X.dot(np.conj(V.T))).dot(splin.pinv(V.dot(np.conj(V.T)) + reg_coef*np.eye(c_rank), return_rank=False))
         V = splin.pinv(np.conj(U.T).dot(U) + reg_coef*np.eye(c_rank), return_rank=False).dot(np.conj(U.T).dot(X))
@@ -272,7 +275,7 @@ def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=0, r
 
         if abs(norms[(ix + 1)] - norms[ix])/norms[ix] < rel_tol:
             if progress:
-                print(f"Required relative tolerance achieved")
+                print(f"Iteration {ix + 1}. Required relative tolerance achieved")
 
             flag = False
         elif ix >= max_iter:
