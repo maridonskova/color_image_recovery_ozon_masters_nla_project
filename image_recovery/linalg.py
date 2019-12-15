@@ -3,8 +3,6 @@
 import numpy as np
 import scipy.linalg as splin
 
-from tqdm.notebook import tqdm
-
 
 # ================================
 # Quaternion algebra
@@ -181,3 +179,111 @@ def cm2qm(C: np.array) -> np.array:
 # Matrix recovery
 # ================================
 
+
+def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=0, rel_tol=1e-3,
+          rot=10.0, rank_mult=0.9, return_norms=False, random_state=None):
+    """
+    LRQMC method of restoring color image with some of pixels missing
+
+    Parameters:
+    ----------------
+    qmat: np.array
+        Image to be restored, represented as 3-tensor of shape (N, M, 4).
+        Color channels are: 1 - red, 2 - blue, 3 - green
+    mask: np.array
+        Boolean mask of shape (N, M) signaling missing pixels.
+        Entries with False correspond to missing values
+    init_rank: int
+        Initial estimation of low-rank approximation. Must be in [2, min(N, M)]
+    reg_coef: float > 0.0
+        Regularization coefficient
+    max_iter: int
+        Maximum allowable number of iterations.
+        If required tolerance not achieved after max_iter iterations - computations end
+    progress: int > 0
+        Controls how often to print output info.
+        If zero - no info is printed, if n - info is printed every nth iteration
+    rel_tol: float > 0.0
+        Convergence tolerance.
+        When norm(X[i + 1] - X[i])/X[i] < rel_tol - convergence is achieved (X is restored image)
+    rot: float > 0.0
+        Rank Overestimation Threshold.
+        Controls when to reduce rank estimation. Rank is reduced when eigv[max]*(rank - 1)/sum(eigv) > rot,
+        where eigv - eigenvalues of UU^H, rank - current estimation of rank
+    rank_mult: float in (0.0, 1.0)
+        Rank Multiplier.
+        When Rank Overestimation Threshold is exceeded, rank estimation is multiplied by this number
+    return_norms: bool
+        If True, function returns norms sequence as well.
+    random_state: int
+        NumPy random generator seed
+
+    Returns:
+    ----------------
+
+    Q: np.array
+        Restored image, represented as 3-tensor of shape (N, M, 4).
+    U, V: np.arrays
+        Multiplicants of Q: C(Q) = UV, where C is transformation from quaternion matrix to complex matrix
+    norms: list of floats
+        Sequence of norms of restored images per iteration
+    """
+
+    X, mask_c = qm2cm(qmat, mask)
+    X0 = X.copy()
+
+    if (not init_rank) or (init_rank > min(qmat.shape[:2])):
+        c_rank = min(qmat.shape[:2])
+    else:
+        c_rank = init_rank
+
+    np.random.seed(random_state)
+    U = np.random.uniform(size=(2*qmat.shape[0], c_rank)) + 1j*np.random.uniform(size=(2*qmat.shape[0], c_rank))
+    V = np.random.uniform(size=(c_rank, 2*qmat.shape[1])) + 1j*np.random.uniform(size=(c_rank, 2*qmat.shape[1]))
+
+    norms = np.zeros(max_iter + 1, dtype=np.float64)
+    norms[0] = np.linalg.norm(X - U.dot(V))
+
+    flag = True
+    ix = 0
+
+    while flag:
+        U = (X.dot(np.conj(V.T))).dot(splin.pinv(V.dot(np.conj(V.T)) + reg_coef*np.eye(c_rank), return_rank=False))
+        V = splin.pinv(np.conj(U.T).dot(U) + reg_coef*np.eye(c_rank), return_rank=False).dot(np.conj(U.T).dot(X))
+        X = X0.copy()
+        X[~mask_c] += (U.dot(V))[~mask_c]
+
+        eigvs = np.sort(splin.eigvalsh(np.conj(U.T).dot(U)))[::-1]
+        quots = eigvs[:-1]/eigvs[1:]
+        max_ind = np.argmax(quots)
+        mu = (c_rank - 1)*eigvs[max_ind]/(eigvs.sum() - eigvs[max_ind])
+
+        if mu > rot:
+            c_rank = max(max_ind + 2, int(c_rank*rank_mult))
+            U = U[:, :c_rank]
+            V = V[:c_rank, :]
+
+        norms[ix + 1] = np.linalg.norm(X - U.dot(V))
+
+        if progress and (ix + 1) % progress == 0:
+            print(f"Iteration {ix + 1}. "
+                  f"Norm reduction: {abs(norms[(ix + 1)] - norms[ix])/norms[ix]*100:.3f} %. "
+                  f"Rank / overestimation: {c_rank} / {mu:.2f}")
+
+        if abs(norms[(ix + 1)] - norms[ix])/norms[ix] < rel_tol:
+            if progress:
+                print(f"Required relative tolerance achieved")
+
+            flag = False
+        elif ix >= max_iter:
+            if progress:
+                print(f"Max iterations count achieved.")
+
+            flag = False
+        else:
+            ix += 1
+
+    if return_norms:
+        return cm2qm(X), U, V, norms
+    else:
+        return cm2qm(X), U, V

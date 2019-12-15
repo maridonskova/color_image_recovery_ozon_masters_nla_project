@@ -34,7 +34,8 @@ def img2qm(filepath: str) -> np.array:
 # ================================
 
 
-def add_random_missing_pixels(img: np.array, q: float, mode: str = "uniform") -> (np.array, np.array):
+def add_random_missing_pixels(img: np.array, q: float, mode: str = "uniform",
+                              random_state: int = None, **kwargs) -> (np.array, np.array):
     """
         Randomly removes pixels from picture in selected fashion, returning altered picture and
         boolean mask
@@ -67,14 +68,39 @@ def add_random_missing_pixels(img: np.array, q: float, mode: str = "uniform") ->
         raise ValueError("Wrong tensor shape or erased pixels proportion not in [0, 1]")
     else:
         mask = np.zeros(img.shape[:2], dtype=np.bool)
+        np.random.seed(random_state)
 
         if mode == "uniform":
             idxs = np.random.choice(np.prod(img.shape[:2]), size=int(np.prod(img.shape[:2])*q), replace=False)
             mask[[x // img.shape[1] for x in idxs], [x % img.shape[1] for x in idxs]] = True
+        elif mode == "normal_clusters":
+            n_clusters = kwargs.get("n_clusters", 3)
+            stdd = kwargs.get("std", min(img.shape[:2])/10)
+
+            cluster_centers = np.array([
+                np.random.randint(img.shape[0], size=n_clusters),
+                np.random.randint(img.shape[1], size=n_clusters)
+            ]).T
+
+            pix_prop = 0.0
+
+            while pix_prop < q:
+                new_pixs = np.concatenate([
+                    np.random.multivariate_normal(xcl, np.eye(2) * stdd ** 2,
+                                                  size=int(np.ceil(img.size * 0.1 / n_clusters)))
+                    for xcl in cluster_centers
+                ]).astype(np.int32)
+
+                new_pixs[:, 0] = np.clip(new_pixs[:, 0], 0, img.shape[0] - 1)
+                new_pixs[:, 1] = np.clip(new_pixs[:, 1], 0, img.shape[1] - 1)
+                mask[new_pixs[:, 0], new_pixs[:, 1]] = True
+                pix_prop = mask.sum()/mask.size
         elif mode == "square":
             sqsz = int(np.sqrt(np.prod(img.shape[:2])*q))
             startpos = (np.random.choice(img.shape[0] - sqsz), np.random.choice(img.shape[1] - sqsz))
             mask[startpos[0]:(startpos[0] + sqsz), startpos[1]:(startpos[1] + sqsz)] = True
+        else:
+            raise ValueError(f"Unknown option {mode}")
 
         imgx = img.copy()
         imgx[np.tile(mask[:, :, None], (1, 1, 4))] = 0.0
