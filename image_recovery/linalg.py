@@ -181,21 +181,24 @@ def cm2qm(C: np.array) -> np.array:
 # ================================
 
 
-def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=True, rel_tol=1e-3,
-          rot=10.0, rank_mult=0.9, return_norms=False, random_state=None):
+def lrqmc(mtr: np.array, mask: np.array, init_rank: int = None, reg_coef: float = 1e-3,
+          max_iter: int = 100, rel_tol: float = 1e-3,
+          hard_rank_reduction: bool = True, rot: float = 10.0, rank_mult: float = 0.9,
+          return_norms=False, random_state=None, progress: bool = True):
     """
     LRQMC method of restoring color image with some of pixels missing
 
     Parameters:
     ----------------
-    qmat: np.array
-        Image to be restored, represented as 3-tensor of shape (N, M, 4).
+    mtr: np.array
+        Image to be restored, represented either as 3-tensor of shape (N, M, 4) or matrix of shape (N, M) - greyscale.
+        This is determined by dimensions of mtr.
         Color channels are: 1 - red, 2 - blue, 3 - green
     mask: np.array
         Boolean mask of shape (N, M) signaling missing pixels.
         Entries with False correspond to missing values
     init_rank: int
-        Initial estimation of low-rank approximation. Must be in [2, min(N, M)]
+        Initial estimation of low-rank approximation. Must be in [2, min(2N, 2M)]
     reg_coef: float > 0.0
         Regularization coefficient
     max_iter: int
@@ -207,10 +210,14 @@ def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=True
     rel_tol: float > 0.0
         Convergence tolerance.
         When norm(X[i + 1] - X[i])/X[i] < rel_tol - convergence is achieved (X is restored image)
+    hard_rank_reduction: bool
+        If True, then rank reduction procedure is acting hard, meaning that it reduces rank to r,
+        where r maximizes eigv[r] / eigv[r + 1] - quotient of eigenvalues of U*U^H.
+        Otherwise rank is multiplied by rank_mult
     rot: float > 0.0
         Rank Overestimation Threshold.
         Controls when to reduce rank estimation. Rank is reduced when eigv[max]*(rank - 1)/sum(eigv) > rot,
-        where eigv - eigenvalues of UU^H, rank - current estimation of rank
+        where eigv - eigenvalues of U*U^H, rank - current estimation of rank
     rank_mult: float in (0.0, 1.0)
         Rank Multiplier.
         When Rank Overestimation Threshold is exceeded, rank estimation is multiplied by this number
@@ -230,20 +237,30 @@ def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=True
         Sequence of norms of restored images per iteration
     """
 
-    X, mask_c = qm2cm(qmat, mask)
+    if mtr.ndim == 3:
+        X, mask = qm2cm(mtr, mask.copy())
+    else:
+        X, mask = mtr.copy(), mask.copy()
+
     X0 = X.copy()
 
-    if (not init_rank) or (init_rank > min(qmat.shape[:2])):
-        c_rank = min(qmat.shape[:2])
+    # ================================
+
+    if (not init_rank) or (init_rank > min(X.shape)):
+        c_rank = min(X.shape)
     else:
         c_rank = init_rank
 
     np.random.seed(random_state)
-    U = np.random.uniform(size=(2*qmat.shape[0], c_rank)) + 1j*np.random.uniform(size=(2*qmat.shape[0], c_rank))
-    V = np.random.uniform(size=(c_rank, 2*qmat.shape[1])) + 1j*np.random.uniform(size=(c_rank, 2*qmat.shape[1]))
+    U = np.random.uniform(size=(X.shape[0], c_rank)) + 1j*np.random.uniform(size=(X.shape[0], c_rank))
+    V = np.random.uniform(size=(c_rank, X.shape[1])) + 1j*np.random.uniform(size=(c_rank, X.shape[1]))
 
     norms = np.zeros(max_iter + 1, dtype=np.float64)
     norms[0] = np.linalg.norm(X - U.dot(V))
+
+    # ================================
+
+    mu = 0.0
 
     flag = True
     ix = 0
@@ -255,22 +272,32 @@ def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=True
         U = (X.dot(np.conj(V.T))).dot(splin.pinv(V.dot(np.conj(V.T)) + reg_coef*np.eye(c_rank), return_rank=False))
         V = splin.pinv(np.conj(U.T).dot(U) + reg_coef*np.eye(c_rank), return_rank=False).dot(np.conj(U.T).dot(X))
         X = X0.copy()
-        X[~mask_c] += (U.dot(V))[~mask_c]
+        X[~mask] += (U.dot(V))[~mask]
+
+        # ================================
 
         if c_rank > 2:
-            eigvs = np.sort(splin.eigvalsh(np.conj(U.T).dot(U)))[::-1]
-            quots = eigvs[:-1]/eigvs[1:]
+            eigvs = splin.svd(U, compute_uv=False)
+            quots = np.power(eigvs[:-1], 2)/np.power(eigvs[1:], 2)
             max_ind = np.argmax(quots)
             mu = (c_rank - 1)/(quots.sum()/quots[max_ind] - 1.0)
 
             if mu > rot:
-                c_rank = max(max_ind + 1, int(c_rank*rank_mult), 2)
+                if hard_rank_reduction:
+                    c_rank = max(max_ind + 1, 2)
+                else:
+                    c_rank = max(int(rank_mult*c_rank), 2)
+
                 XU, XS, XVh = splin.svd(X, compute_uv=True, full_matrices=False)
                 U = XU[:, :c_rank]*XS[None, :c_rank]
                 V = XVh[:c_rank, :]
 
+        # ================================
+
         norms[ix + 1] = np.linalg.norm(X - U.dot(V))
         rel_norm_change = (norms[ix + 1] - norms[ix])/norms[ix]
+
+        # ================================
 
         if progress:
             pbar.update()
@@ -292,7 +319,12 @@ def lrqmc(qmat, mask, init_rank=None, reg_coef=1e-3, max_iter=100, progress=True
         else:
             ix += 1
 
+    # ================================
+
+    if mtr.ndim == 3:
+        X = cm2qm(X)
+
     if return_norms:
-        return cm2qm(X), U, V, norms
+        return X, U, V, norms
     else:
-        return cm2qm(X), U, V
+        return X, U, V
