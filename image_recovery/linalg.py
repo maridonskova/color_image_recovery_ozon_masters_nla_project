@@ -181,10 +181,10 @@ def cm2qm(C: np.array) -> np.array:
 # ================================
 
 
-def lrqmc(mtr: np.array, mask: np.array, init_rank: int = None, reg_coef: float = 1e-3,
-          max_iter: int = 100, rel_tol: float = 1e-3,
+def lrqmc(mtr: np.array, mask: np.array, init_rank: int = None, min_rank: int = 2,
+          reg_coef: float = 1e-3, max_iter: int = 100, rel_tol: float = 1e-3,
           hard_rank_reduction: bool = True, rot: float = 10.0, rank_mult: float = 0.9,
-          return_norms=False, random_state=None, progress: bool = True):
+          full_history=False, random_state=None, progress: bool = True):
     """
     LRQMC method of restoring color image with some of pixels missing
 
@@ -199,6 +199,8 @@ def lrqmc(mtr: np.array, mask: np.array, init_rank: int = None, reg_coef: float 
         Entries with False correspond to missing values
     init_rank: int
         Initial estimation of low-rank approximation. Must be in [2, min(2N, 2M)]
+    min_rank: int
+        Minimal possible rank of UV-decomposition of quaternion matrix
     reg_coef: float > 0.0
         Regularization coefficient
     max_iter: int
@@ -228,7 +230,6 @@ def lrqmc(mtr: np.array, mask: np.array, init_rank: int = None, reg_coef: float 
 
     Returns:
     ----------------
-
     Q: np.array
         Restored image, represented as 3-tensor of shape (N, M, 4).
     U, V: np.arrays
@@ -265,37 +266,46 @@ def lrqmc(mtr: np.array, mask: np.array, init_rank: int = None, reg_coef: float 
     flag = True
     ix = 0
 
+    if full_history:
+        fh = [mtr]
+
     if progress:
         pbar = tqdm(total=max_iter, leave=False, desc="LRQMC", postfix=f"Initial rank estimation: {c_rank}.")
 
     while flag:
         U = (X.dot(np.conj(V.T))).dot(splin.pinv(V.dot(np.conj(V.T)) + reg_coef*np.eye(c_rank), return_rank=False))
-        V = splin.pinv(np.conj(U.T).dot(U) + reg_coef*np.eye(c_rank), return_rank=False).dot(np.conj(U.T).dot(X))
+        V = splin.pinv(np.conj(U.T).dot(U) + reg_coef*np.eye(c_rank), return_rank=False).dot((np.conj(U.T)).dot(X))
         X = X0.copy()
         X[~mask] += (U.dot(V))[~mask]
 
         # ================================
 
-        if c_rank > 2:
-            eigvs = splin.svd(U, compute_uv=False)
-            quots = np.power(eigvs[:-1], 2)/np.power(eigvs[1:], 2)
+        if c_rank > min_rank:
+            eigvs = np.sort(splin.eigvalsh(np.conj(U.T).dot(U)))[::-1]
+            quots = eigvs[:-1]/eigvs[1:]
             max_ind = np.argmax(quots)
-            mu = (c_rank - 1)/(quots.sum()/quots[max_ind] - 1.0)
+            mu = (c_rank - 1.0)/(quots.sum()/quots[max_ind] - 1.0)
 
             if mu > rot:
                 if hard_rank_reduction:
-                    c_rank = max(max_ind + 1, 2)
+                    c_rank = max(max_ind + 1, min_rank)
                 else:
-                    c_rank = max(int(rank_mult*c_rank), 2)
+                    c_rank = max(int(rank_mult*c_rank), min_rank)
 
                 XU, XS, XVh = splin.svd(X, compute_uv=True, full_matrices=False)
                 U = XU[:, :c_rank]*XS[None, :c_rank]
                 V = XVh[:c_rank, :]
 
+                X = X0.copy()
+                X[~mask] += (U.dot(V))[~mask]
+
         # ================================
 
         norms[ix + 1] = np.linalg.norm(X - U.dot(V))
         rel_norm_change = (norms[ix + 1] - norms[ix])/norms[ix]
+
+        if full_history:
+            fh.append(cm2qm(X))
 
         # ================================
 
@@ -324,7 +334,9 @@ def lrqmc(mtr: np.array, mask: np.array, init_rank: int = None, reg_coef: float 
     if mtr.ndim == 3:
         X = cm2qm(X)
 
-    if return_norms:
-        return X, U, V, norms
+    if full_history:
+        return fh
     else:
         return X, U, V
+
+
